@@ -1,34 +1,45 @@
+use crate::explorer::PriorityMessage::{FirstLevel, SecondLevel};
 use crate::STEAM_API_KEY;
 use mysql::prelude::Queryable;
 use mysql::{Params, Pool};
 use reqwest::{Client, Error};
+use serde_json::ser::State::First;
 use serde_json::{Map, Value};
 use std::str::FromStr;
 use std::time::SystemTime;
 use tokio::sync::broadcast::{self, error::TryRecvError, Receiver, Sender};
 use tokio::time::Duration;
 
+#[derive(Clone, Debug)]
+pub enum PriorityMessage {
+    FirstLevel(u64),
+    SecondLevel(u64),
+}
+
 pub struct Explorer {
     rx_external: Receiver<u64>,
-    rx_internal: Receiver<u64>,
     tx_internal: Sender<u64>,
+    tx_priority: Sender<PriorityMessage>,
     conn_pool: Pool,
     client: Client,
 }
 
 impl Explorer {
     pub fn new(rx_external: Receiver<u64>, conn_pool: Pool, client: Client) -> Self {
-        let (tx_internal, rx_internal) = broadcast::channel(1_000_000);
+        let (tx_internal, _) = broadcast::channel(1_000_000);
+        let (tx_priority, _) = broadcast::channel(100_000);
         Self {
             rx_external,
-            rx_internal,
             tx_internal,
+            tx_priority,
             conn_pool,
             client,
         }
     }
 
     pub async fn start(&mut self) {
+        let mut rx_internal = self.tx_internal.subscribe();
+        let mut rx_priority = self.tx_priority.subscribe();
         loop {
             tokio::time::sleep(Duration::from_millis(100)).await;
             match self.rx_external.try_recv() {
@@ -36,10 +47,9 @@ impl Explorer {
                     if id_64 == 0 {
                         break;
                     } else {
-                        tokio::spawn(explore(
-                            self.conn_pool.clone(),
+                        tokio::spawn(explore_priority(
                             self.client.clone(),
-                            self.tx_internal.clone(),
+                            self.tx_priority.clone(),
                             id_64,
                         ));
                     }
@@ -52,7 +62,22 @@ impl Explorer {
                     }
                 },
             };
-            if let Ok(next_user) = self.rx_internal.try_recv() {
+            if let Ok(priority_message) = rx_priority.try_recv() {
+                match priority_message {
+                    FirstLevel(user) => tokio::spawn(try_retrieve_and_write_aliases(
+                        self.conn_pool.clone(),
+                        self.client.clone(),
+                        self.tx_internal.clone(),
+                        user,
+                    )),
+                    SecondLevel(user) => tokio::spawn(explore(
+                        self.conn_pool.clone(),
+                        self.client.clone(),
+                        self.tx_internal.clone(),
+                        user,
+                    )),
+                };
+            } else if let Ok(next_user) = rx_internal.try_recv() {
                 tokio::spawn(explore(
                     self.conn_pool.clone(),
                     self.client.clone(),
@@ -65,32 +90,70 @@ impl Explorer {
 }
 
 async fn explore(conn_pool: Pool, client: Client, tx_internal: Sender<u64>, next_user: u64) {
-    match get_aliases(client.clone(), next_user).await {
+    try_retrieve_and_write_aliases(conn_pool, client.clone(), tx_internal.clone(), next_user).await;
+    put_friends_on_queue(client, tx_internal, next_user).await;
+}
+
+async fn explore_priority(client: Client, tx_priority: Sender<PriorityMessage>, next_user: u64) {
+    if let Err(e) = tx_priority.send(FirstLevel(next_user)) {
+        log::error!("Error putting user on the queue: {:?}", e)
+    }
+
+    match retrieve_friends(client.clone(), next_user).await {
+        Ok(friends) => {
+            for friend in friends {
+                if let Err(e) = tx_priority.send(FirstLevel(friend)) {
+                    log::error!("Error putting user on the queue: {:?}", e)
+                }
+                match retrieve_friends(client.clone(), friend).await {
+                    Ok(friends) => friends.iter().for_each(|e| {
+                        if let Err(e) = tx_priority.send(SecondLevel(*e)) {
+                            log::error!("Error putting user on the queue: {:?}", e)
+                        }
+                    }),
+                    Err(e) => log::error!("Error retrieving friends: {:?}", e),
+                };
+            }
+        }
+        Err(e) => log::error!("Error retrieving friends of priority user: {:?}", e),
+    };
+}
+
+async fn try_retrieve_and_write_aliases(
+    conn_pool: Pool,
+    client: Client,
+    tx_internal: Sender<u64>,
+    user: u64,
+) {
+    match get_aliases(client.clone(), user).await {
         Ok(aliases) => {
             let aliases = if aliases.len() == 0 {
-                if let Ok(current_name) = get_current_name(client.clone(), next_user).await {
+                if let Ok(current_name) = get_current_name(client.clone(), user).await {
                     vec![current_name]
                 } else {
-                    log::error!("Could not get current name for: {:?}", next_user);
+                    log::error!("Could not get current name for: {:?}", user);
                     return;
                 }
             } else {
                 aliases
             };
-            if let Err(e) = write_aliases_db(conn_pool, next_user, aliases).await {
+            if let Err(e) = write_aliases_db(conn_pool, user, aliases).await {
                 log::error!("Error writing aliases into database: {:?}", e);
             }
         }
         Err(e) => {
             log::error!("Error retrieving aliases: {:?}, back on the Queue", e);
-            if let Err(e) = tx_internal.send(next_user) {
+            if let Err(e) = tx_internal.send(user) {
                 log::error!("Error putting user on the queue: {:?}", e)
             }
         }
     };
-    match retrieve_friends(client, next_user).await {
+}
+
+async fn put_friends_on_queue(client: Client, tx: Sender<u64>, user: u64) {
+    match retrieve_friends(client, user).await {
         Ok(friends) => friends.iter().for_each(|e| {
-            if let Err(e) = tx_internal.send(*e) {
+            if let Err(e) = tx.send(*e) {
                 log::error!("Error putting user on the queue: {:?}", e)
             }
         }),

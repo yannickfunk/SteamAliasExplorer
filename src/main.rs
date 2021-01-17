@@ -1,10 +1,14 @@
 mod explorer;
+
 use crate::explorer::Explorer;
+use futures::FutureExt;
 use log::{error, info, trace, warn};
 use mysql::Pool;
 use reqwest::{self, Client};
 use std::time::SystemTime;
-use tokio::sync::broadcast;
+use tide::http::Request;
+use tide::StatusCode;
+use tokio::sync::broadcast::{self, Sender};
 use tokio::time::{sleep, Duration};
 
 const STEAM_API_KEY: &str = "E564DC18D4C81A716362FC53104572D5";
@@ -24,9 +28,29 @@ async fn main() {
     };
 
     tokio::spawn(explorer_future);
-    let id_to_send_to_service = 76561198248077092;
-    tx.send(id_to_send_to_service).unwrap();
-    sleep(Duration::from_secs(60 * 60 * 24)).await;
+    run_webserver(tx.clone()).await;
+
+    sleep(Duration::from_secs(60 * 60 * 24 * 365)).await;
+}
+
+async fn run_webserver(tx: Sender<u64>) {
+    let mut app = tide::new();
+    app.at("/explorer/enqueue/:id_64")
+        .get(move |req: tide::Request<()>| {
+            let tx = tx.clone();
+            async move {
+                let id_64 = req.param("id_64")?.parse()?;
+                if let Err(_) = tx.send(id_64) {
+                    Err(tide::Error::from_str(
+                        StatusCode::BadGateway,
+                        "Queue not reachable",
+                    ))
+                } else {
+                    Ok(format!("Enqueued {:?}", id_64))
+                }
+            }
+        });
+    app.listen("127.0.0.1:8080").await.unwrap();
 }
 
 fn setup_logger() -> Result<(), fern::InitError> {
