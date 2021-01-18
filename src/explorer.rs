@@ -1,9 +1,7 @@
 use crate::explorer::PriorityMessage::{FirstLevel, SecondLevel};
-use crate::STEAM_API_KEY;
 use mysql::prelude::Queryable;
 use mysql::{Params, Pool};
 use reqwest::{Client, Error};
-use serde_json::ser::State::First;
 use serde_json::{Map, Value};
 use std::str::FromStr;
 use std::time::SystemTime;
@@ -174,7 +172,8 @@ async fn get_aliases(client: Client, id_64: u64) -> Result<Vec<String>, Error> {
 async fn get_current_name(client: Client, id_64: u64) -> Result<String, Error> {
     let request = format!(
         "http://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/?key={:}&steamids={:?}",
-        STEAM_API_KEY, id_64
+        std::env::var("api_webkey").unwrap(),
+        id_64
     );
     let text = client.get(&request).send().await?.json::<Value>().await?;
     let json: Map<String, Value> = text.as_object().unwrap().clone();
@@ -217,7 +216,7 @@ async fn write_aliases_db(
 }
 
 async fn retrieve_friends(client: Client, id_64: u64) -> Result<Vec<u64>, Error> {
-    let request = format!("http://api.steampowered.com/ISteamUser/GetFriendList/v0001/?key={:}&steamid={:?}&relationship=friend", STEAM_API_KEY, id_64);
+    let request = format!("http://api.steampowered.com/ISteamUser/GetFriendList/v0001/?key={:}&steamid={:?}&relationship=friend", std::env::var("api_webkey").unwrap(), id_64);
     let text = client.get(&request).send().await?.json::<Value>().await?;
     let json: Map<String, Value> = text.as_object().unwrap().clone();
     if let Some(friendlist) = json.get("friendslist") {

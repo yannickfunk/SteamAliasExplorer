@@ -1,23 +1,24 @@
 mod explorer;
 
 use crate::explorer::Explorer;
-use futures::FutureExt;
-use log::{error, info, trace, warn};
 use mysql::Pool;
 use reqwest::{self, Client};
 use std::time::SystemTime;
-use tide::http::Request;
 use tide::StatusCode;
 use tokio::sync::broadcast::{self, Sender};
-use tokio::time::{sleep, Duration};
-
-const STEAM_API_KEY: &str = "E564DC18D4C81A716362FC53104572D5";
 
 #[tokio::main]
 async fn main() {
     setup_logger().unwrap();
 
-    let url = "mysql://root:test@localhost:3306/alias_explorer";
+    let mysql_password = std::env::var("mysql_password").unwrap();
+    let mysql_hostname = std::env::var("mysql_hostname").unwrap();
+    let mysql_username = std::env::var("mysql_username").unwrap();
+    let mysql_database = std::env::var("mysql_database").unwrap();
+    let url = format!(
+        "mysql://{:}:{:}@{:}/{:}",
+        mysql_username, mysql_password, mysql_hostname, mysql_database
+    );
     let pool = Pool::new(url).unwrap();
     let client = Client::builder().connection_verbose(false).build().unwrap();
 
@@ -30,7 +31,7 @@ async fn main() {
     tokio::spawn(explorer_future);
     run_webserver(tx.clone()).await;
 
-    sleep(Duration::from_secs(60 * 60 * 24 * 365)).await;
+    loop {}
 }
 
 async fn run_webserver(tx: Sender<u64>) {
@@ -50,7 +51,7 @@ async fn run_webserver(tx: Sender<u64>) {
                 }
             }
         });
-    app.listen("127.0.0.1:8080").await.unwrap();
+    app.listen("0.0.0.0:8080").await.unwrap();
 }
 
 fn setup_logger() -> Result<(), fern::InitError> {
@@ -68,7 +69,7 @@ fn setup_logger() -> Result<(), fern::InitError> {
             fern::Dispatch::new()
                 .level(log::LevelFilter::Debug)
                 .chain(fern::log_file(format!(
-                    "log/{:?}.log",
+                    "{:?}.log",
                     SystemTime::now()
                         .duration_since(SystemTime::UNIX_EPOCH)
                         .unwrap()
