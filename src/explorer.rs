@@ -185,7 +185,7 @@ async fn get_current_name(client: Client, id_64: u64) -> Result<String, Error> {
 async fn write_aliases_db(
     conn_pool: Pool,
     id_64: u64,
-    aliases: Vec<String>,
+    mut aliases: Vec<String>,
 ) -> Result<(), mysql::Error> {
     let query = format!("SELECT id_64 from aliases WHERE id_64 = {:?}", id_64);
     let query_result: Vec<String> = conn_pool.get_conn()?.query(query)?;
@@ -194,6 +194,14 @@ async fn write_aliases_db(
         .unwrap()
         .as_secs_f64();
     if query_result.len() > 0 {
+        let aliases_from_db = get_aliases_from_db(conn_pool.clone(), id_64).await?;
+        let new_aliases: Vec<String> = aliases
+            .iter()
+            .filter(|e| !aliases_from_db.contains(e))
+            .map(|e| e.to_string())
+            .collect();
+        log::info!("New aliases: {:?}", new_aliases.clone());
+        aliases.extend(new_aliases);
         let update_stmt = format!(
             "UPDATE aliases SET alias_list = '{:?}', last_written = {:?} WHERE id_64 = {:?}",
             aliases, now, id_64
@@ -232,4 +240,20 @@ async fn retrieve_friends(client: Client, id_64: u64) -> Result<Vec<u64>, Error>
     }
     log::error!("No public friendlist or Error retrieving friends");
     Ok(vec![])
+}
+
+async fn get_aliases_from_db(conn_pool: Pool, user: u64) -> Result<Vec<String>, mysql::Error> {
+    let mut db_conn = conn_pool.get_conn()?;
+    let query = format!("SELECT alias_list from aliases WHERE id_64 = {:?}", user);
+    let query_result: Vec<String> = db_conn.query(query)?;
+    let json_str = query_result.first().unwrap().as_str();
+    let aliases: Vec<String> = json_str
+        .strip_prefix("[")
+        .unwrap()
+        .strip_suffix("]")
+        .unwrap()
+        .split(", ")
+        .map(|e| e.replace("\"", "").to_string())
+        .collect();
+    Ok(aliases)
 }
