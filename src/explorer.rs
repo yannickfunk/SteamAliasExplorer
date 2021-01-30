@@ -25,7 +25,7 @@ pub struct Explorer {
 impl Explorer {
     pub fn new(rx_external: Receiver<u64>, conn_pool: Pool, client: Client) -> Self {
         let (tx_internal, _) = broadcast::channel(1_000_000);
-        let (tx_priority, _) = broadcast::channel(100_000);
+        let (tx_priority, _) = broadcast::channel(1_000_000);
         Self {
             rx_external,
             tx_internal,
