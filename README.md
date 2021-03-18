@@ -5,7 +5,7 @@ Service which caches all related steam profiles and their recent aliases startin
 ## Requirements
  * MySQL Database
      * Table `aliases`
-         ```
+         ```SQL
          CREATE TABLE `aliases` (
 	           `id_64` BIGINT(20) UNSIGNED NOT NULL,
 	           `alias_list` LONGTEXT NULL DEFAULT NULL COLLATE 'utf8mb4_bin',
