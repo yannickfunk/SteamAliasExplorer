@@ -21,7 +21,7 @@ Service which caches all related steam profiles and their recent aliases startin
       * api_webkey (This is your Steam API key)
 
 ## Build and Run
-```
+```bash
 cargo run --release
 ```
 
